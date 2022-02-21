@@ -151,6 +151,9 @@ def _fit_model_custom(
             see ``iminuit.Minuit.tol`` (uses EDM < 0.002*tolerance), defaults to
             None (use ``iminuit`` default of 0.1)
 
+    Raises:
+        ValueError: if minimization fails
+
     Returns:
         FitResults: object storing relevant fit results
     """
@@ -774,6 +777,9 @@ def limit(
                 expected -1 sigma, 3: expected, 4: expected +1 sigma, 5: expected +2
                 sigma
             limit_label (str): string to use when referring to the current limit
+
+        Raises:
+            ValueError: if root finding fails (usually due to starting bracket choice)
 
         Returns:
             float: absolute value of difference to CLs=``cls_target``
