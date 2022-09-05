@@ -503,8 +503,9 @@ def ranking(
     *,
     figure_folder: Union[str, pathlib.Path] = "figures",
     max_pars: Optional[int] = None,
+    poi_name: Optional[str] = '',
     close_figure: bool = True,
-    save_figure: bool = True,
+    save_figure: bool = True
 ) -> mpl.figure.Figure:
     """Produces a ranking plot showing the impact of parameters on the POI.
 
@@ -521,7 +522,11 @@ def ranking(
         matplotlib.figure.Figure: the ranking figure
     """
     # path is None if figure should not be saved
-    figure_path = pathlib.Path(figure_folder) / "ranking.pdf" if save_figure else None
+    if poi_name:
+        save_name = "ranking_"+poi_name+".pdf"
+    else:
+        save_name = "ranking.pdf"
+    figure_path = pathlib.Path(figure_folder) / save_name if save_figure else None
 
     # sort parameters by decreasing average post-fit impact
     avg_postfit_impact = (
