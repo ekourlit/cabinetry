@@ -4,6 +4,7 @@ from unittest import mock
 
 import iminuit
 import numpy as np
+import pyhf
 import pytest
 
 from cabinetry import fit
@@ -29,6 +30,7 @@ def test_print_results(caplog):
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @mock.patch("cabinetry.fit._run_minos", return_value={"Signal strength": (-0.1, 0.2)})
 def test__fit_model_pyhf(mock_minos, example_spec, example_spec_multibin):
+    pyhf.set_backend("numpy", "scipy")
     model, data = model_utils.model_and_data(example_spec)
     fit_results = fit._fit_model_pyhf(model, data)
     assert np.allclose(fit_results.bestfit, [8.33624084, 1.1])
@@ -36,6 +38,7 @@ def test__fit_model_pyhf(mock_minos, example_spec, example_spec_multibin):
     assert fit_results.labels == ["Signal strength", "staterror_Signal-Region[0]"]
     assert np.allclose(fit_results.best_twice_nll, 7.82495235)
     assert np.allclose(fit_results.corr_mat, [[1.0, 0.0], [0.0, 0.0]])
+    assert pyhf.get_backend()[1].name == "scipy"  # optimizer was reset
 
     # Asimov fit, with fixed gamma (fixed not to Asimov MLE)
     model, data = model_utils.model_and_data(example_spec, asimov=True)
@@ -69,6 +72,24 @@ def test__fit_model_pyhf(mock_minos, example_spec, example_spec_multibin):
     fit_results = fit._fit_model_pyhf(model, data, par_bounds=par_bounds)
     assert np.allclose(fit_results.bestfit, [5.0, 1.1])
 
+    # propagation of strategy, max iterations, tolerance
+    model, data = model_utils.model_and_data(example_spec)
+    with mock.patch("pyhf.infer.mle.fit") as mock_fit:
+        # mock return value will cause ValueError immediately after call
+        # could alternatively use mocker.spy from pytest-mock
+        with pytest.raises(ValueError):
+            fit._fit_model_pyhf(model, data)
+        # strategy kwarg not used in call, so not propagated to pyhf
+        assert "strategy" not in mock_fit.call_args[1].keys()
+        assert mock_fit.call_args[1]["maxiter"] is None
+        assert mock_fit.call_args[1]["tolerance"] is None
+
+        with pytest.raises(ValueError):
+            fit._fit_model_pyhf(model, data, strategy=2, maxiter=100, tolerance=0.01)
+        assert mock_fit.call_args[1]["strategy"] == 2
+        assert mock_fit.call_args[1]["maxiter"] == 100
+        assert mock_fit.call_args[1]["tolerance"] == 0.01
+
     # including minos, one parameter is unknown
     model, data = model_utils.model_and_data(example_spec)
     fit_results = fit._fit_model_pyhf(model, data, minos=["Signal strength", "abc"])
@@ -86,6 +107,7 @@ def test__fit_model_pyhf(mock_minos, example_spec, example_spec_multibin):
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @mock.patch("cabinetry.fit._run_minos", return_value={"Signal strength": (-0.1, 0.2)})
 def test__fit_model_custom(mock_minos, example_spec, example_spec_multibin):
+    pyhf.set_backend("numpy", "scipy")
     model, data = model_utils.model_and_data(example_spec)
     fit_results = fit._fit_model_custom(model, data)
     assert np.allclose(fit_results.bestfit, [8.33625071, 1.1])
@@ -93,6 +115,7 @@ def test__fit_model_custom(mock_minos, example_spec, example_spec_multibin):
     assert fit_results.labels == ["Signal strength", "staterror_Signal-Region[0]"]
     assert np.allclose(fit_results.best_twice_nll, 7.82495235)
     assert np.allclose(fit_results.corr_mat, [[1.0, 0.0], [0.0, 0.0]])
+    assert pyhf.get_backend()[1].name == "scipy"  # optimizer was reset
 
     # Asimov fit, with fixed gamma (fixed not to Asimov MLE)
     model, data = model_utils.model_and_data(example_spec, asimov=True)
@@ -125,6 +148,26 @@ def test__fit_model_custom(mock_minos, example_spec, example_spec_multibin):
     par_bounds = [(0, 5), (0.1, 2)]
     fit_results = fit._fit_model_custom(model, data, par_bounds=par_bounds)
     assert np.allclose(fit_results.bestfit, [5.0, 1.1])
+
+    # propagation of strategy, max iterations, tolerance
+    model, data = model_utils.model_and_data(example_spec)
+    mock_minuit_instance = mock.MagicMock()
+    mock_minuit_instance.errors = [0.1, 0.1]  # needed as it will be accessed
+    with mock.patch("iminuit.Minuit", return_value=mock_minuit_instance):
+        # mocked minuit instance used to check correct propagation of settings
+        fit._fit_model_custom(model, data)
+        assert mock_minuit_instance.strategy == 1  # default for numpy backend
+        assert mock_minuit_instance.migrad.call_args == ((), {"ncall": 100_000})
+        assert mock_minuit_instance.tol == 0.1
+
+        fit._fit_model_custom(model, data, strategy=2, maxiter=100, tolerance=0.01)
+        assert mock_minuit_instance.strategy == 2
+        assert mock_minuit_instance.migrad.call_args == ((), {"ncall": 100})
+        assert mock_minuit_instance.tol == 0.01
+
+    # failed fit (simulated via limited number of iterations)
+    with pytest.raises(ValueError, match="Minimization failed, minimum is invalid."):
+        fit._fit_model_custom(model, data, maxiter=10)
 
     # including minos
     model, data = model_utils.model_and_data(example_spec)
@@ -165,10 +208,13 @@ def test__fit_model(mock_pyhf, mock_custom, example_spec):
         "init_pars": None,
         "fix_pars": None,
         "par_bounds": None,
+        "strategy": None,
+        "maxiter": None,
+        "tolerance": None,
     }
     assert np.allclose(fit_results.bestfit, [1.1])
 
-    # pyhf API, init/fixed pars, par bounds, minos
+    # pyhf API, init/fixed pars, par bounds, minos, strategy/maxiter/tolerance
     fit_results = fit._fit_model(
         model,
         data,
@@ -176,6 +222,9 @@ def test__fit_model(mock_pyhf, mock_custom, example_spec):
         init_pars=[1.5, 2.0],
         fix_pars=[False, True],
         par_bounds=[(0, 5), (0.1, 10.0)],
+        strategy=2,
+        maxiter=100,
+        tolerance=0.01,
     )
     assert mock_pyhf.call_count == 2
     assert mock_pyhf.call_args[0][0].spec == model.spec
@@ -185,6 +234,9 @@ def test__fit_model(mock_pyhf, mock_custom, example_spec):
         "init_pars": [1.5, 2.0],
         "fix_pars": [False, True],
         "par_bounds": [(0, 5), (0.1, 10.0)],
+        "strategy": 2,
+        "maxiter": 100,
+        "tolerance": 0.01,
     }
     assert np.allclose(fit_results.bestfit, [1.1])
 
@@ -198,10 +250,13 @@ def test__fit_model(mock_pyhf, mock_custom, example_spec):
         "init_pars": None,
         "fix_pars": None,
         "par_bounds": None,
+        "strategy": None,
+        "maxiter": None,
+        "tolerance": None,
     }
     assert np.allclose(fit_results.bestfit, [1.2])
 
-    # direct iminuit, init/fixed pars, par bounds, minos
+    # direct iminuit, init/fixed pars, par bounds, minos, strategy/maxiter/tolerance
     fit_results = fit._fit_model(
         model,
         data,
@@ -209,6 +264,9 @@ def test__fit_model(mock_pyhf, mock_custom, example_spec):
         init_pars=[1.5, 2.0],
         fix_pars=[False, True],
         par_bounds=[(0, 5), (0.1, 10.0)],
+        strategy=2,
+        maxiter=100,
+        tolerance=0.01,
         custom_fit=True,
     )
     assert mock_custom.call_count == 2
@@ -219,6 +277,9 @@ def test__fit_model(mock_pyhf, mock_custom, example_spec):
         "init_pars": [1.5, 2.0],
         "fix_pars": [False, True],
         "par_bounds": [(0, 5), (0.1, 10.0)],
+        "strategy": 2,
+        "maxiter": 100,
+        "tolerance": 0.01,
     }
     assert np.allclose(fit_results.bestfit, [1.2])
 
@@ -312,6 +373,9 @@ def test_fit(mock_fit, mock_print, mock_gof):
                 "init_pars": None,
                 "fix_pars": None,
                 "par_bounds": None,
+                "strategy": None,
+                "maxiter": None,
+                "tolerance": None,
                 "custom_fit": False,
             },
         )
@@ -323,7 +387,7 @@ def test_fit(mock_fit, mock_print, mock_gof):
     assert mock_gof.call_count == 0
     assert fit_results.bestfit == [1.0]
 
-    # custom fit, init/fix pars, par bounds
+    # custom fit, init/fix pars, par bounds, strategy/maxiter/tolerance
     init_pars = [2.0]
     fix_pars = [True]
     par_bounds = [(0.0, 5.0)]
@@ -333,6 +397,9 @@ def test_fit(mock_fit, mock_print, mock_gof):
         init_pars=init_pars,
         fix_pars=fix_pars,
         par_bounds=par_bounds,
+        strategy=2,
+        maxiter=100,
+        tolerance=0.01,
         custom_fit=True,
     )
     assert mock_fit.call_count == 2
@@ -343,6 +410,9 @@ def test_fit(mock_fit, mock_print, mock_gof):
             "init_pars": init_pars,
             "fix_pars": fix_pars,
             "par_bounds": par_bounds,
+            "strategy": 2,
+            "maxiter": 100,
+            "tolerance": 0.01,
             "custom_fit": True,
         },
     )
@@ -358,6 +428,9 @@ def test_fit(mock_fit, mock_print, mock_gof):
         "init_pars": None,
         "fix_pars": None,
         "par_bounds": None,
+        "strategy": None,
+        "maxiter": None,
+        "tolerance": None,
         "custom_fit": False,
     }
     assert fit_results.bestfit == [1.0]
@@ -368,6 +441,9 @@ def test_fit(mock_fit, mock_print, mock_gof):
         "init_pars": None,
         "fix_pars": None,
         "par_bounds": None,
+        "strategy": None,
+        "maxiter": None,
+        "tolerance": None,
         "custom_fit": True,
     }
     assert fit_results.bestfit == [1.0]
@@ -432,6 +508,9 @@ def test_ranking(mock_fit, example_spec):
         )
         assert np.allclose(mock_fit.call_args_list[i][1]["fix_pars"], expected_fix)
         assert mock_fit.call_args_list[i][1]["par_bounds"] is None
+        assert mock_fit.call_args_list[i][1]["strategy"] is None
+        assert mock_fit.call_args_list[i][1]["maxiter"] is None
+        assert mock_fit.call_args_list[i][1]["tolerance"] is None
         assert mock_fit.call_args_list[i][1]["custom_fit"] is False
 
     # POI removed from fit results
@@ -465,7 +544,7 @@ def test_ranking(mock_fit, example_spec):
     assert np.allclose(ranking_results.postfit_up, [0.2])
     assert np.allclose(ranking_results.postfit_down, [-0.2])
 
-    # no reference results, init/fixed pars, par bounds
+    # no reference results, init/fixed pars, par bounds, strategy/maxiter/tolerance
     ranking_results = fit.ranking(
         model,
         data,
@@ -473,6 +552,9 @@ def test_ranking(mock_fit, example_spec):
         init_pars=[1.5, 1.0],
         fix_pars=[False, False],
         par_bounds=[(0, 5), (0.1, 10)],
+        strategy=2,
+        maxiter=100,
+        tolerance=0.01,
         custom_fit=True,
     )
     assert mock_fit.call_count == 9
@@ -483,19 +565,28 @@ def test_ranking(mock_fit, example_spec):
             "init_pars": [1.5, 1.0],
             "fix_pars": [False, False],
             "par_bounds": [(0, 5), (0.1, 10)],
+            "strategy": 2,
+            "maxiter": 100,
+            "tolerance": 0.01,
             "custom_fit": True,
         },
     )
-    # fits for impact
+    # fits for impact (comparing each option separately since init_pars needs allclose)
     assert mock_fit.call_args_list[-2][0] == (model, data)
     assert np.allclose(mock_fit.call_args_list[-2][1]["init_pars"], [1.5, 1.2])
     assert mock_fit.call_args_list[-2][1]["fix_pars"] == [False, True]
     assert mock_fit.call_args_list[-2][1]["par_bounds"] == [(0, 5), (0.1, 10)]
+    assert mock_fit.call_args_list[-2][1]["strategy"] == 2
+    assert mock_fit.call_args_list[-2][1]["maxiter"] == 100
+    assert mock_fit.call_args_list[-2][1]["tolerance"] == 0.01
     assert mock_fit.call_args_list[-2][1]["custom_fit"] is True
     assert mock_fit.call_args_list[-1][0] == (model, data)
     assert np.allclose(mock_fit.call_args_list[-1][1]["init_pars"], [1.5, 0.6])
     assert mock_fit.call_args_list[-1][1]["fix_pars"] == [False, True]
     assert mock_fit.call_args_list[-1][1]["par_bounds"] == [(0, 5), (0.1, 10)]
+    assert mock_fit.call_args_list[-1][1]["strategy"] == 2
+    assert mock_fit.call_args_list[-1][1]["maxiter"] == 100
+    assert mock_fit.call_args_list[-1][1]["tolerance"] == 0.01
     assert mock_fit.call_args_list[-1][1]["custom_fit"] is True
     # ranking results
     assert np.allclose(ranking_results.prefit_up, [0.0])
@@ -547,6 +638,9 @@ def test_scan(mock_fit, example_spec):
         "init_pars": None,
         "fix_pars": None,
         "par_bounds": None,
+        "strategy": None,
+        "maxiter": None,
+        "tolerance": None,
         "custom_fit": False,
     }
     # fits in scan
@@ -556,10 +650,14 @@ def test_scan(mock_fit, example_spec):
             "init_pars": [scan_val, 1.1],
             "fix_pars": [True, True],
             "par_bounds": None,
+            "strategy": None,
+            "maxiter": None,
+            "tolerance": None,
             "custom_fit": False,
         }
 
-    # parameter range specified, custom fit, init/fixed pars, par bounds
+    # parameter range specified, custom fit, init/fixed pars, par bounds,
+    # strategy/maxiter/tolerance
     scan_results = fit.scan(
         model,
         data,
@@ -569,6 +667,9 @@ def test_scan(mock_fit, example_spec):
         init_pars=[1.0, 1.0],
         fix_pars=[False, False],
         par_bounds=[(0, 5), (0.1, 10)],
+        strategy=2,
+        maxiter=100,
+        tolerance=0.01,
         custom_fit=True,
     )
     expected_custom_scan = np.linspace(1.0, 1.5, 5)
@@ -578,6 +679,9 @@ def test_scan(mock_fit, example_spec):
         "init_pars": [1.5, 1.0],  # last step of scan
         "fix_pars": [True, False],
         "par_bounds": [(0, 5), (0.1, 10)],
+        "strategy": 2,
+        "maxiter": 100,
+        "tolerance": 0.01,
         "custom_fit": True,
     }
 
@@ -588,6 +692,7 @@ def test_scan(mock_fit, example_spec):
 
 def test_limit(example_spec_with_background, caplog):
     caplog.set_level(logging.DEBUG)
+    pyhf.set_backend("numpy", "scipy")
 
     # expected values for results
     observed_limit = 0.749
@@ -615,10 +720,11 @@ def test_limit(example_spec_with_background, caplog):
     assert limit_results.confidence_level == 0.95
     # verify that POI values are sorted
     assert np.allclose(limit_results.poi_values, sorted(limit_results.poi_values))
+    assert pyhf.get_backend()[1].name == "scipy"  # optimizer was reset
     caplog.clear()
 
     # access negative POI values with lower bracket below zero
-    limit_results = fit.limit(model, data, bracket=(-1, 5), tolerance=0.05)
+    limit_results = fit.limit(model, data, bracket=(-1, 5), poi_tolerance=0.05)
     assert "skipping fit for Signal strength = -1.0000, setting CLs = 1" in [
         rec.message for rec in caplog.records
     ]
@@ -627,7 +733,7 @@ def test_limit(example_spec_with_background, caplog):
     caplog.clear()
 
     # convergence issues due to number of iterations
-    fit.limit(model, data, bracket=(0.1, 1), maxiter=1)
+    fit.limit(model, data, bracket=(0.1, 1), maxsteps=1)
     assert "one or more calculations did not converge, check log" in [
         rec.message for rec in caplog.records
     ]
@@ -707,8 +813,42 @@ def test_limit(example_spec_with_background, caplog):
     with pytest.raises(ValueError, match="no POI specified, cannot calculate limit"):
         fit.limit(model, data)
 
+    # add POI back to model and reset backend for testing optimizer customization
+    example_spec_with_background["measurements"][0]["config"]["poi"] = "Signal strength"
+    model, data = model_utils.model_and_data(example_spec_with_background)
+    pyhf.set_backend("numpy", "scipy")
+
+    # default strategy/maxiter/tolerance
+    with mock.patch("pyhf.set_backend") as mock_backend:
+        fit.limit(model, data)
+    assert mock_backend.call_count == 2
+    # setting to minuit
+    assert mock_backend.call_args_list[0][0][1].name == "minuit"
+    assert mock_backend.call_args_list[0][0][1].verbose == 1
+    assert mock_backend.call_args_list[0][0][1].strategy is None
+    assert mock_backend.call_args_list[0][0][1].maxiter is None
+    assert mock_backend.call_args_list[0][0][1].tolerance is None
+    assert mock_backend.call_args_list[0][1] == {}
+    # resetting back to scipy
+    assert mock_backend.call_args_list[1][0][1].name == "scipy"
+
+    # custom strategy/maxiter/tolerance
+    with mock.patch("pyhf.set_backend") as mock_backend:
+        fit.limit(model, data, strategy=2, maxiter=100, tolerance=0.01)
+    assert mock_backend.call_count == 2
+    # setting to minuit
+    assert mock_backend.call_args_list[0][0][1].name == "minuit"
+    assert mock_backend.call_args_list[0][0][1].verbose == 1
+    assert mock_backend.call_args_list[0][0][1].strategy == 2
+    assert mock_backend.call_args_list[0][0][1].maxiter == 100
+    assert mock_backend.call_args_list[0][0][1].tolerance == 0.01
+    assert mock_backend.call_args_list[0][1] == {}
+    # resetting back to scipy
+    assert mock_backend.call_args_list[1][0][1].name == "scipy"
+
 
 def test_significance(example_spec_with_background):
+    pyhf.set_backend("numpy", "scipy")
     # increase observed data for smaller observed p-value
     example_spec_with_background["observations"][0]["data"] = [196]
 
@@ -718,17 +858,23 @@ def test_significance(example_spec_with_background):
     assert np.allclose(significance_results.observed_significance, 3.15402672)
     assert np.allclose(significance_results.expected_p_value, 0.00033333)
     assert np.allclose(significance_results.expected_significance, 3.40293444)
+    assert pyhf.get_backend()[1].name == "scipy"  # optimizer was reset
 
     # reduce signal for larger expected p-value
     example_spec_with_background["channels"][0]["samples"][0]["data"] = [30]
 
-    # Asimov dataset, observed = expected
+    # Asimov dataset, observed = expected, POI removed from measurement config
+    example_spec_with_background["measurements"][0]["config"]["poi"] = ""
     model, data = model_utils.model_and_data(example_spec_with_background, asimov=True)
-    significance_results = fit.significance(model, data)
+    assert model.config.poi_index is None  # no POI set before calculation
+    assert model.config.poi_name is None
+    significance_results = fit.significance(model, data, poi_name="Signal strength")
     assert np.allclose(significance_results.observed_p_value, 0.02062714)
     assert np.allclose(significance_results.observed_significance, 2.04096523)
     assert np.allclose(significance_results.expected_p_value, 0.02062714)
     assert np.allclose(significance_results.expected_significance, 2.04096523)
+    assert model.config.poi_index is None  # model config is preserved
+    assert model.config.poi_name is None
 
     # init/fixed pars, par bounds
     model, data = model_utils.model_and_data(example_spec_with_background)
@@ -736,6 +882,7 @@ def test_significance(example_spec_with_background):
         fit.significance(
             model,
             data,
+            poi_name="Signal strength",
             init_pars=[0.9, 1.0],
             fix_pars=[False, True],
             par_bounds=[(0, 5), (0.1, 10.0)],
@@ -752,3 +899,42 @@ def test_significance(example_spec_with_background):
             },
         )
     ]
+
+    # no POI specified anywhere
+    with pytest.raises(
+        ValueError, match="no POI specified, cannot calculate significance"
+    ):
+        fit.significance(model, data)
+
+    # add POI back to model and reset backend for testing optimizer customization
+    example_spec_with_background["measurements"][0]["config"]["poi"] = "Signal strength"
+    model, data = model_utils.model_and_data(example_spec_with_background)
+    pyhf.set_backend("numpy", "scipy")
+
+    # default strategy/maxiter/tolerance
+    with mock.patch("pyhf.set_backend") as mock_backend:
+        fit.significance(model, data)
+    assert mock_backend.call_count == 2
+    # setting to minuit
+    assert mock_backend.call_args_list[0][0][1].name == "minuit"
+    assert mock_backend.call_args_list[0][0][1].verbose == 1
+    assert mock_backend.call_args_list[0][0][1].strategy is None
+    assert mock_backend.call_args_list[0][0][1].maxiter is None
+    assert mock_backend.call_args_list[0][0][1].tolerance is None
+    assert mock_backend.call_args_list[0][1] == {}
+    # resetting back to scipy
+    assert mock_backend.call_args_list[1][0][1].name == "scipy"
+
+    # custom strategy/maxiter/tolerance
+    with mock.patch("pyhf.set_backend") as mock_backend:
+        fit.significance(model, data, strategy=2, maxiter=100, tolerance=0.01)
+    assert mock_backend.call_count == 2
+    # setting to minuit
+    assert mock_backend.call_args_list[0][0][1].name == "minuit"
+    assert mock_backend.call_args_list[0][0][1].verbose == 1
+    assert mock_backend.call_args_list[0][0][1].strategy == 2
+    assert mock_backend.call_args_list[0][0][1].maxiter == 100
+    assert mock_backend.call_args_list[0][0][1].tolerance == 0.01
+    assert mock_backend.call_args_list[0][1] == {}
+    # resetting back to scipy
+    assert mock_backend.call_args_list[1][0][1].name == "scipy"

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib as mpl
 import numpy as np
+import pyhf
 
 from cabinetry import configuration
 from cabinetry import fit
@@ -234,7 +235,7 @@ def data_mc(
 
         fig = plot_model.data_mc(
             histogram_dict_list,
-            np.asarray(model_prediction.total_stdev_model_bins[i_chan]),
+            np.asarray(model_prediction.total_stdev_model_bins[i_chan][-1]),
             bin_edges,
             figure_path=figure_path,
             log_scale=log_scale,
@@ -509,6 +510,8 @@ def ranking(
 ) -> mpl.figure.Figure:
     """Produces a ranking plot showing the impact of parameters on the POI.
 
+    The parameters are shown in decreasing order of greatest post-fit impact.
+
     Args:
         ranking_results (fit.RankingResults): fit results, and pre- and post-fit impacts
         figure_folder (Union[str, pathlib.Path], optional): path to the folder to save
@@ -528,13 +531,14 @@ def ranking(
         save_name = "ranking.pdf"
     figure_path = pathlib.Path(figure_folder) / save_name if save_figure else None
 
-    # sort parameters by decreasing average post-fit impact
-    avg_postfit_impact = (
-        np.abs(ranking_results.postfit_up) + np.abs(ranking_results.postfit_down)
-    ) / 2
+    # sort parameters by decreasing maximum post-fit impact
+    max_postfit_impact = np.maximum(
+        np.abs(ranking_results.postfit_up),
+        np.abs(ranking_results.postfit_down),
+    )
 
     # get indices to sort by decreasing impact
-    sorted_indices = np.argsort(avg_postfit_impact)[::-1]
+    sorted_indices = np.argsort(max_postfit_impact)[::-1]
     bestfit = ranking_results.bestfit[sorted_indices]
     uncertainty = ranking_results.uncertainty[sorted_indices]
     labels = np.asarray(ranking_results.labels)[sorted_indices]  # labels are list
@@ -632,6 +636,106 @@ def limit(
         limit_results.expected_CLs,
         limit_results.poi_values,
         1 - limit_results.confidence_level,
+        figure_path=figure_path,
+        close_figure=close_figure,
+    )
+    return fig
+
+
+def modifier_grid(
+    model: pyhf.pdf.Model,
+    *,
+    figure_folder: Union[str, pathlib.Path] = "figures",
+    split_by_sample: bool = False,
+    close_figure: bool = True,
+    save_figure: bool = True,
+) -> mpl.figure.Figure:
+    """Visualizes the modifier structure of a model in a 2d grid.
+
+    Args:
+        model (pyhf.pdf.Model): model to visualize
+        figure_folder (Union[str, pathlib.Path], optional): path to the folder to save
+            figures in, defaults to "figures"
+        split_by_sample (bool, optional): whether to use (channel, parameter) grids
+            for each sample, defaults to False (if enabled, uses (sample, parameter)
+            grids for each channel)
+        close_figure (bool, optional): whether to close figure, defaults to True
+        save_figure (bool, optional): whether to save figure, defaults to True
+    """
+    # collect modifier types affecting each (channel, sample, parameter) combination
+    modifier_map = model_utils._modifier_map(model)
+
+    # build 2d grids: one grid per channel or one grid per sample
+    if split_by_sample:
+        # one (channel, parameter) grid per sample
+        axis_labels = [
+            model.config.samples,
+            model.config.channels,
+            model.config.par_order,
+        ]
+    else:
+        # one (sample, parameter) grid per channel
+        axis_labels = [
+            model.config.channels,
+            model.config.samples,
+            model.config.par_order,
+        ]
+
+    grid_list = [
+        np.zeros(shape=(len(axis_labels[1]), len(axis_labels[2])))
+        for _ in axis_labels[0]
+    ]
+
+    category_to_int_map = {
+        "normfactor": 0,
+        "shapefactor": 1,
+        "shapesys": 2,
+        "lumi": 3,
+        "staterror": 4,
+        "normsys + histosys": 5,
+        "histosys": 6,
+        "normsys": 7,
+        "none": 8,
+    }
+
+    # fill the list of grids with information about which modifiers enter where
+    for i_grid, grid_label in enumerate(axis_labels[0]):
+        for j_axis, axis_label in enumerate(axis_labels[1]):
+            # extract channel and sample names depending on grid formatting
+            if split_by_sample:
+                chan, sam = axis_label, grid_label  # one grid per sample
+            else:
+                chan, sam = grid_label, axis_label  # one grid per channel
+
+            for k_par, par in enumerate(axis_labels[2]):
+                modifiers = modifier_map[(chan, sam, par)]
+                # assign integer value to field depending on modifiers found
+                if modifiers == []:
+                    value = category_to_int_map["none"]
+                else:
+                    try:
+                        # look up value from category map
+                        value = category_to_int_map[" + ".join(sorted(modifiers)[::-1])]
+                    except KeyError:
+                        log.error(
+                            f"modifiers for {chan}, {sam}, {par} not supported:"
+                            f" {modifiers}"
+                        )
+                        raise
+                grid_list[i_grid][j_axis, k_par] = value
+
+    # translation from value to category label for plotting
+    int_to_category_map = {label: val for val, label in category_to_int_map.items()}
+
+    # path is None if figure should not be saved
+    figure_path = (
+        pathlib.Path(figure_folder) / "modifier_grid.pdf" if save_figure else None
+    )
+
+    fig = plot_model.modifier_grid(
+        grid_list,
+        axis_labels,
+        int_to_category_map,
         figure_path=figure_path,
         close_figure=close_figure,
     )

@@ -13,8 +13,8 @@ from cabinetry.fit.results_containers import FitResults
 def test_ModelPrediction(example_spec):
     model = pyhf.Workspace(example_spec).model()
     model_yields = [[[10.0]]]
-    total_stdev_model_bins = [[2.0]]
-    total_stdev_model_channels = [2.0]
+    total_stdev_model_bins = [[[2.0], [2.0]]]
+    total_stdev_model_channels = [[2.0, 2.0]]
     label = "abc"
     model_prediction = model_utils.ModelPrediction(
         model, model_yields, total_stdev_model_bins, total_stdev_model_channels, label
@@ -45,8 +45,7 @@ def test_model_and_data(example_spec):
 
 
 def test_asimov_data(example_spec):
-    ws = pyhf.Workspace(example_spec)
-    model = ws.model()
+    model = pyhf.Workspace(example_spec).model()
     assert model_utils.asimov_data(model) == [51.8, 1]
 
     # without auxdata
@@ -56,9 +55,45 @@ def test_asimov_data(example_spec):
     example_spec["measurements"][0]["config"]["parameters"].append(
         {"name": "Signal strength", "inits": [2.0]}
     )
-    ws = pyhf.Workspace(example_spec)
-    model = ws.model()
+    model = pyhf.Workspace(example_spec).model()
     assert model_utils.asimov_data(model, include_auxdata=False) == [103.6]
+
+    # post-fit Asimov
+    fit_results = FitResults(
+        np.asarray([3.0, 1.0]),
+        np.asarray([0.1, 0.01]),
+        ["Signal strength", "staterror_Signal-Region[0]"],
+        np.asarray([[1.0, 0.1], [0.1, 1.0]]),
+        0.0,
+    )
+    assert np.allclose(
+        model_utils.asimov_data(model, fit_results=fit_results), [155.4, 1.0]
+    )
+
+    # post-fit Asimov, custom POI value (name from model config)
+    assert np.allclose(
+        model_utils.asimov_data(model, fit_results=fit_results, poi_value=1.5),
+        [77.7, 1.0],
+    )
+
+    # pre-fit Asimov, custom POI name + value
+    assert np.allclose(
+        model_utils.asimov_data(
+            model,
+            poi_name="staterror_Signal-Region[0]",
+            poi_value=1.1,
+        ),
+        [113.96, 1.1],  # 2*51.8*1.1
+    )
+
+    # post-fit Asimov, no POI in model and no poi_name either
+    example_spec["measurements"][0]["config"]["poi"] = ""
+    model = pyhf.Workspace(example_spec).model()
+    with pytest.raises(
+        ValueError,
+        match="no POI specified in model, use the poi_name argument to set POI name",
+    ):
+        model_utils.asimov_data(model, poi_value=1.0)
 
 
 def test_asimov_parameters(example_spec, example_spec_shapefactor, example_spec_lumi):
@@ -158,8 +193,8 @@ def test_yield_stdev(example_spec, example_spec_multibin):
     total_stdev_bin, total_stdev_chan = model_utils.yield_stdev(
         model, parameters, uncertainty, corr_mat
     )
-    assert np.allclose(total_stdev_bin, [[8.03150606]])
-    assert np.allclose(total_stdev_chan, [8.03150606])
+    assert np.allclose(total_stdev_bin, [[[8.03150606], [8.03150606]]])
+    assert np.allclose(total_stdev_chan, [[8.03150606, 8.03150606]])
 
     # pre-fit
     parameters = np.asarray([1.0, 1.0])
@@ -168,8 +203,8 @@ def test_yield_stdev(example_spec, example_spec_multibin):
     total_stdev_bin, total_stdev_chan = model_utils.yield_stdev(
         model, parameters, uncertainty, diag_corr_mat
     )
-    assert np.allclose(total_stdev_bin, [[2.56754823]])  # the staterror
-    assert np.allclose(total_stdev_chan, [2.56754823])
+    assert np.allclose(total_stdev_bin, [[[2.56754823], [2.56754823]]])  # the staterror
+    assert np.allclose(total_stdev_chan, [[2.56754823, 2.56754823]])
 
     # multiple channels, bins, staterrors
     model = pyhf.Workspace(example_spec_multibin).model()
@@ -186,9 +221,12 @@ def test_yield_stdev(example_spec, example_spec_multibin):
     total_stdev_bin, total_stdev_chan = model_utils.yield_stdev(
         model, parameters, uncertainty, corr_mat
     )
-    expected_stdev_bin = [[8.056054, 1.670629], [2.775377]]
-    expected_stdev_chan = [9.596340, 2.775377]
-    for i_reg in range(2):
+    expected_stdev_bin = [
+        [[8.056054, 1.670629], [8.056054, 1.670629]],
+        [[2.775377], [2.775377]],
+    ]
+    expected_stdev_chan = [[9.596340, 9.596340], [2.775377, 2.775377]]
+    for i_reg in range(2):  # two channels
         assert np.allclose(total_stdev_bin[i_reg], expected_stdev_bin[i_reg])
         assert np.allclose(total_stdev_chan[i_reg], expected_stdev_chan[i_reg])
 
@@ -214,9 +252,12 @@ def test_yield_stdev(example_spec, example_spec_multibin):
 @mock.patch(
     "cabinetry.model_utils.yield_stdev",
     side_effect=[
-        ([[5.0, 2.0], [1.0]], [5.38516481, 1.0]),
-        ([[0.3]], [0.3]),
-        ([[0.3]], [0.3]),
+        (
+            [[[5.0, 2.0], [5.0, 2.0]], [[1.0], [1.0]]],
+            [[5.38516481, 5.38516481], [1.0, 1.0]],
+        ),
+        ([[[0.3], [0.3]]], [[0.3, 0.3]]),
+        ([[[0.3], [0.3]]], [[0.3, 0.3]]),
     ],
 )
 @mock.patch(
@@ -232,7 +273,7 @@ def test_yield_stdev(example_spec, example_spec_multibin):
     ],
 )
 def test_prediction(
-    mock_asimov, mock_unc, mock_stdev, caplog, example_spec_multibin, example_spec
+    mock_asimov, mock_unc, mock_stdev, example_spec_multibin, example_spec, caplog
 ):
     caplog.set_level(logging.DEBUG)
     model = pyhf.Workspace(example_spec_multibin).model()
@@ -242,8 +283,13 @@ def test_prediction(
     assert model_pred.model == model
     # yields from pyhf expected_data call, per-bin / per-channel uncertainty from mock
     assert model_pred.model_yields == [[[25.0, 5.0]], [[8.0]]]
-    assert model_pred.total_stdev_model_bins == [[5.0, 2.0], [1.0]]
-    assert np.allclose(model_pred.total_stdev_model_channels, [5.38516481, 1.0])
+    assert model_pred.total_stdev_model_bins == [
+        [[5.0, 2.0], [5.0, 2.0]],
+        [[1.0], [1.0]],
+    ]
+    assert np.allclose(
+        model_pred.total_stdev_model_channels, [[5.38516481, 5.38516481], [1.0, 1.0]]
+    )
     assert model_pred.label == "pre-fit"
 
     # Asimov parameter calculation and pre-fit uncertainties
@@ -272,8 +318,8 @@ def test_prediction(
     model_pred = model_utils.prediction(model, fit_results=fit_results)
     assert model_pred.model == model
     assert np.allclose(model_pred.model_yields, [[[57.54980000]]])  # new par value
-    assert model_pred.total_stdev_model_bins == [[0.3]]  # from mock
-    assert model_pred.total_stdev_model_channels == [0.3]  # from mock
+    assert model_pred.total_stdev_model_bins == [[[0.3], [0.3]]]  # from mock
+    assert model_pred.total_stdev_model_channels == [[0.3, 0.3]]  # from mock
     assert model_pred.label == "post-fit"
     assert "parameter names in fit results and model do not match" not in [
         rec.message for rec in caplog.records
@@ -424,7 +470,7 @@ def test_match_fit_results(mock_pars, mock_uncs):
     )
 
     # remove par_a, flip par_b and par_c, add par_d
-    mock_model.config.par_names.return_value = ["par_c", "par_d", "par_b"]
+    mock_model.config.par_names = ["par_c", "par_d", "par_b"]
     matched_fit_res = model_utils.match_fit_results(mock_model, fit_results)
     assert mock_pars.call_args_list == [((mock_model,), {})]
     assert mock_uncs.call_args_list == [((mock_model,), {})]
@@ -438,7 +484,7 @@ def test_match_fit_results(mock_pars, mock_uncs):
     assert matched_fit_res.goodness_of_fit == 0.1
 
     # all parameters are new
-    mock_model.config.par_names.return_value = ["par_d", "par_e"]
+    mock_model.config.par_names = ["par_d", "par_e"]
     matched_fit_res = model_utils.match_fit_results(mock_model, fit_results)
     assert np.allclose(matched_fit_res.bestfit, [4.0, 5.0])
     assert np.allclose(matched_fit_res.uncertainty, [0.4, 0.5])
@@ -448,7 +494,7 @@ def test_match_fit_results(mock_pars, mock_uncs):
     assert matched_fit_res.goodness_of_fit == 0.1
 
     # fit results already match model exactly
-    mock_model.config.par_names.return_value = ["par_a", "par_b", "par_c"]
+    mock_model.config.par_names = ["par_a", "par_b", "par_c"]
     matched_fit_res = model_utils.match_fit_results(mock_model, fit_results)
     assert np.allclose(matched_fit_res.bestfit, [1.0, 2.0, 3.0])
     assert np.allclose(matched_fit_res.uncertainty, [0.1, 0.2, 0.3])
@@ -458,3 +504,14 @@ def test_match_fit_results(mock_pars, mock_uncs):
     )
     assert matched_fit_res.best_twice_nll == 5.0
     assert matched_fit_res.goodness_of_fit == 0.1
+
+
+def test_modifier_map(example_spec):
+    model = pyhf.Workspace(example_spec).model()
+
+    modifier_map = model_utils._modifier_map(model)
+    assert modifier_map == {
+        ("Signal Region", "Signal", "staterror_Signal-Region"): ["staterror"],
+        ("Signal Region", "Signal", "Signal strength"): ["normfactor"],
+    }
+    assert modifier_map[("a", "b", "c")] == []
