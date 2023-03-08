@@ -1103,7 +1103,7 @@ def significance(
     model.config.set_poi(model.config.par_names[poi_index])
 
     log.info(f"calculating discovery significance for {model.config.poi_name}")
-    obs_p_val, exp_p_val = pyhf.infer.hypotest(
+    obs_p_val, exp_p_val, exp_set_p_val = pyhf.infer.hypotest(
         0.0,
         data,
         model,
@@ -1112,11 +1112,14 @@ def significance(
         par_bounds=par_bounds,
         test_stat="q0",
         return_expected=True,
+        return_expected_set=True
     )
     obs_p_val = float(obs_p_val)
     exp_p_val = float(exp_p_val)
+    exp_set_p_val = list(map(lambda x: float(x), exp_set_p_val))
     obs_significance = scipy.stats.norm.isf(obs_p_val, 0, 1)
     exp_significance = scipy.stats.norm.isf(exp_p_val, 0, 1)
+    exp_set_significance = list(map(lambda x: scipy.stats.norm.isf(x, 0, 1), exp_set_p_val))
 
     # set POI in model back to original values
     model.config.set_poi(original_model_poi_name)
@@ -1133,7 +1136,7 @@ def significance(
     log.info(f"expected significance: {exp_significance:.3f}")
 
     significance_results = SignificanceResults(
-        obs_p_val, obs_significance, exp_p_val, exp_significance
+        obs_p_val, obs_significance, exp_p_val, exp_significance, exp_set_p_val, exp_set_significance
     )
     pyhf.set_backend(pyhf.tensorlib, initial_optimizer)  # restore optimizer settings
     return significance_results
