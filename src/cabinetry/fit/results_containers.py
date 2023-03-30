@@ -100,13 +100,13 @@ class SignificanceResults(NamedTuple):
         observed_significance (float): observed significance
         expected_p_value (float): expected/median p-value
         expected_significance (float): expected/median significance
-        expected_set_p_value (float): [-2, -1, 0, 1, 2] sigma of p-value
-        expected_set_significance (float): [-2, -1, 0, 1, 2] sigma of significance
+        expected_p_value_set (float): [-2, -1, 0, 1, 2] sigma of p-value
+        expected_significance_set (float): [-2, -1, 0, 1, 2] sigma of significance
     """
 
     observed_p_value: float
     observed_significance: float
     expected_p_value: float
     expected_significance: float
-    expected_set_p_value: List[float]
-    expected_set_significance: List[float]
+    expected_p_value_set: List[float]
+    expected_significance_set: List[float]
