@@ -90,6 +90,7 @@ def _yields_per_bin(
     data: List[List[float]],
     channels: List[str],
     label: str,
+    precision: int
 ) -> List[Dict[str, Any]]:
     """Outputs and returns a yield table with predicted and observed yields per bin.
 
@@ -101,6 +102,7 @@ def _yields_per_bin(
         data (List[List[float]]): data yield per channel and bin
         channels (List[str]): names of channels to use
         label (str): label for model prediction to include in log
+        precision (int): number of decimal places to show
 
     Returns:
         List[Dict[str, Any]]: yield table for use with the ``tabulate`` package
@@ -120,8 +122,8 @@ def _yields_per_bin(
                     {
                         _header_name(
                             channel_name, i_bin
-                        ): f"{model_yields[i_chan][i_sam][i_bin]:.2f} "
-                        f"\u00B1 {total_stdev_model[i_chan][i_sam][i_bin]:.2f}"
+                        ): f"{model_yields[i_chan][i_sam][i_bin]:.{precision}f} "
+                        f"\u00B1 {total_stdev_model[i_chan][i_sam][i_bin]:.{precision}f}"
                     }
                 )
         table.append(sample_dict)
@@ -139,12 +141,12 @@ def _yields_per_bin(
             total_dict.update(
                 {
                     header_name: (
-                        f"{total_model[i_bin]:.2f} "
-                        f"\u00B1 {total_stdev_model[i_chan][-1][i_bin]:.2f}"
+                        f"{total_model[i_bin]:.{precision}f} "
+                        f"\u00B1 {total_stdev_model[i_chan][-1][i_bin]:.{precision}f}"
                     )
                 }
             )
-            data_dict.update({header_name: f"{data[i_chan][i_bin]:.2f}"})
+            data_dict.update({header_name: f"{data[i_chan][i_bin]:.{precision}f}"})
     table += [total_dict, data_dict]
 
     log.info(
@@ -161,6 +163,7 @@ def _yields_per_channel(
     data: List[float],
     channels: List[str],
     label: str,
+    precision: int
 ) -> List[Dict[str, Any]]:
     """Outputs and returns a yield table with predicted and observed yields per channel.
 
@@ -172,6 +175,7 @@ def _yields_per_channel(
         data (List[float]): data yield per channel
         channels (List[str]): names of channels to use
         label (str): label for model prediction to include in log
+        precision (int): number of decimal places to show
 
     Returns:
         List[Dict[str, Any]]: yield table for use with the ``tabulate`` package
@@ -187,8 +191,8 @@ def _yields_per_channel(
         for i_chan, channel_name in zip(channel_indices, channels):
             sample_dict.update(
                 {
-                    channel_name: f"{model_yields[i_chan][i_sam]:.2f} "
-                    f"\u00B1 {total_stdev_model[i_chan][i_sam]:.2f}"
+                    channel_name: f"{model_yields[i_chan][i_sam]:.{precision}f} "
+                    f"\u00B1 {total_stdev_model[i_chan][i_sam]:.{precision}f}"
                 }
             )
         table.append(sample_dict)
@@ -200,11 +204,11 @@ def _yields_per_channel(
         total_model = np.sum(model_yields[i_chan], axis=0)  # sum over samples
         total_dict.update(
             {
-                channel_name: f"{total_model:.2f} "
-                f"\u00B1 {total_stdev_model[i_chan][-1]:.2f}"
+                channel_name: f"{total_model:.{precision}f} "
+                f"\u00B1 {total_stdev_model[i_chan][-1]:.{precision}f}"
             }
         )
-        data_dict.update({channel_name: f"{data[i_chan]:.2f}"})
+        data_dict.update({channel_name: f"{data[i_chan]:.{precision}f}"})
     table += [total_dict, data_dict]
 
     log.info(
@@ -221,6 +225,7 @@ def yields(
     channels: Optional[Union[str, List[str]]] = None,
     per_bin: bool = True,
     per_channel: bool = False,
+    precision: int = 2,
     table_folder: Union[str, pathlib.Path] = "tables",
     table_format: str = "simple",
     save_tables: bool = True,
@@ -241,6 +246,7 @@ def yields(
             to True
         per_channel (bool, optional): whether to show a table with yields per channel,
             defaults to False
+        precision (int, optional): number of decimal places to show, defaults to 2
         table_folder (Union[str, pathlib.Path], optional): path to the folder to save
             tables in, defaults to "tables"
         table_format (str, optional): format in which to save the tables, can be any of
@@ -279,6 +285,7 @@ def yields(
             data_yields,
             filtered_channels,
             model_prediction.label,
+            precision
         )
         table_dict.update({"yields_per_bin": per_bin_table})
 
@@ -298,6 +305,7 @@ def yields(
             data_per_channel,
             filtered_channels,
             model_prediction.label,
+            precision
         )
         table_dict.update({"yields_per_channel": per_channel_table})
 
