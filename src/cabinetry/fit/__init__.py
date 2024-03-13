@@ -782,6 +782,7 @@ def limit(
     strategy: Optional[Literal[0, 1, 2]] = None,
     maxiter: Optional[int] = None,
     tolerance: Optional[float] = None,
+    return_expected: Optional[bool] = True
 ) -> LimitResults:
     """Calculates observed and expected upper parameter limits.
 
@@ -821,6 +822,7 @@ def limit(
         tolerance (Optional[float]), optional): tolerance for convergence, for details
             see ``iminuit.Minuit.tol`` (uses EDM < 0.002*tolerance), defaults to
             None (use ``iminuit`` default of 0.1)
+        return_expected (Optional[bool], optional): whether to return expected limits, defaults to True
 
     Raises:
         ValueError: if no POI is found
@@ -955,6 +957,13 @@ def limit(
     all_limits = []
     all_converged = True
     for i_limit, limit_label in enumerate(limit_labels):
+        if not return_expected and limit_label != "observed":
+            # skip expected limits if not requested
+            log.debug(f"skipping {limit_label} limit")
+            # VK: not sure what is a proper value to return here
+            all_limits.append(-99)
+            continue
+
         log.info(f"determining {limit_label} upper limit")
 
         try:
